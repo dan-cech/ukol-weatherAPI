@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Počasí</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,600;12..96,800&display=swap" rel="stylesheet">
+<style>
+  :root {
+    color-scheme: light;
+    --bg: #E6EEF5;
+    --surface: #FFFFFF;
+    --ink: #1E2A44;
+    --muted: #5B6B85;
+    --line: #C9D6E3;
+    --sun: #F2B705;
+    --err: #B3261E;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      color-scheme: dark;
+      --bg: #121A2B;
+      --surface: #1B2540;
+      --ink: #E9EEF7;
+      --muted: #9AA8C2;
+      --line: #2E3B5C;
+      --sun: #F5C431;
+      --err: #FF8A80;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: "Bricolage Grotesque", system-ui, -apple-system, "Segoe UI", sans-serif;
+    line-height: 1.5;
+  }
+  main { max-width: 720px; margin: 0 auto; padding: 48px 20px 64px; }
+  h1 { font-size: clamp(2.2rem, 7vw, 3.6rem); font-weight: 800; line-height: 1; margin: 0 0 24px; letter-spacing: -0.02em; }
+  form { display: flex; gap: 8px; margin-bottom: 32px; }
+  input {
+    flex: 1; min-width: 0; font: inherit; font-size: 1.1rem;
+    padding: 12px 16px; border: 2px solid var(--line); border-radius: 10px;
+    background: var(--surface); color: var(--ink);
+  }
+  input:focus-visible, button:focus-visible { outline: 3px solid var(--sun); outline-offset: 2px; }
+  button {
+    font: inherit; font-weight: 600; font-size: 1.1rem;
+    padding: 12px 22px; border: 0; border-radius: 10px;
+    background: var(--ink); color: var(--bg); cursor: pointer;
+  }
+  button:disabled { opacity: .6; cursor: wait; }
+  .status { color: var(--muted); }
+  .error { color: var(--err); font-weight: 600; }
+  .place { font-size: 1.6rem; font-weight: 600; margin: 0 0 4px; }
+  .place small { display: block; font-size: 1rem; font-weight: 400; color: var(--muted); }
+  h2 { font-size: 1.15rem; font-weight: 600; margin: 32px 0 12px; }
+
+  .aqi { background: var(--surface); border-radius: 14px; padding: 20px; border-left: 10px solid var(--aqi, var(--line)); }
+  .aqi-label { font-size: 1.4rem; font-weight: 800; margin: 0; }
+  .aqi-values { display: flex; flex-wrap: wrap; gap: 8px 24px; margin-top: 10px; color: var(--muted); }
+  .aqi-values b { color: var(--ink); font-weight: 600; }
+
+  .days { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; }
+  .day { background: var(--surface); border-radius: 14px; padding: 18px; }
+  .day-name { font-weight: 600; text-transform: capitalize; margin: 0; }
+  .day-temp { font-size: 2.6rem; font-weight: 800; line-height: 1.1; margin: 6px 0 2px; }
+  .day-cond { color: var(--muted); margin: 0 0 14px; }
+  .sun { display: flex; justify-content: space-between; border-top: 1px solid var(--line); padding-top: 12px; }
+  .sun span { display: block; font-size: .85rem; color: var(--muted); }
+  .sun b { font-size: 1.15rem; }
+  .sun div:last-child { text-align: right; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Jaké bude počasí?</h1>
+
+  <form id="form">
+    <input id="city" type="text" placeholder="Zadej město, např. Brno" autocomplete="off" required>
+    <button id="btn" type="submit">Zobrazit</button>
+  </form>
+
+  <p id="status" class="status">Napiš název města a dej Zobrazit.</p>
+  <section id="result" hidden></section>
+</main>
+
+<script>
+// ===================== CONFIG =====================
+const CONFIG = {
+  API_KEY: "7bf1c1af1990440094771604260710",          // klíč z weatherapi.com (Dashboard → API Key)
+  BASE_URL: "https://api.weatherapi.com/v1",
+  DAYS: 3,                                 // počet dní předpovědi (free plán max 3)
+  LANG: "cs",                              // jazyk popisu počasí
+};
+
+// Popisky US EPA indexu kvality ovzduší (1–6) + barva
+const AQI_LEVELS = {
+  1: { text: "Dobrá",                          color: "#3BAA5C" },
+  2: { text: "Přijatelná",                     color: "#E6C229" },
+  3: { text: "Nezdravá pro citlivé skupiny",   color: "#F28C28" },
+  4: { text: "Nezdravá",                       color: "#D64545" },
+  5: { text: "Velmi nezdravá",                 color: "#8E44AD" },
+  6: { text: "Nebezpečná",                     color: "#7A1F2B" },
+};
+// ==================================================
+
+const form = document.getElementById("form");
+const input = document.getElementById("city");
+const btn = document.getElementById("btn");
+const statusEl = document.getElementById("status");
+const resultEl = document.getElementById("result");
+
+form.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const city = input.value.trim();
+  if (!city) return;
+
+  setStatus("Načítám…");
+  resultEl.hidden = true;
+  btn.disabled = true;
+
+  try {
+    const data = await fetchForecast(city);
+    render(data);
+    setStatus("");
+  } catch (err) {
+    setStatus(err.message, true);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+// Jeden request na /forecast.json vrátí všechno: kvalitu ovzduší, předpověď i východ/západ slunce
+async function fetchForecast(city) {
+  const params = new URLSearchParams({
+    key: CONFIG.API_KEY,
+    q: city,
+    days: CONFIG.DAYS,
+    aqi: "yes",
+    alerts: "no",
+    lang: CONFIG.LANG,
+  });
+
+  let res;
+  try {
+    res = await fetch(`${CONFIG.BASE_URL}/forecast.json?${params}`);
+  } catch {
+    throw new Error("Nepodařilo se spojit s WeatherAPI. Zkontroluj připojení k internetu.");
+  }
+
+  const data = await res.json();
+
+  if (!res.ok) {
+    const code = data?.error?.code;
+    if (code === 1006) throw new Error(`Město „${city}“ nebylo nalezeno. Zkus jiný název.`);
+    if (code === 2006 || code === 1002) throw new Error("Neplatný API klíč. Vlož svůj klíč do CONFIG.API_KEY.");
+    throw new Error(data?.error?.message || `Chyba serveru (${res.status}).`);
+  }
+  return data;
+}
+
+function render(data) {
+  const { location, current, forecast } = data;
+  const aq = current.air_quality;
+  const level = AQI_LEVELS[aq["us-epa-index"]] || { text: "Neznámá", color: "var(--line)" };
+
+  const daysHtml = forecast.forecastday.map((d) => `
+    <article class="day">
+      <p class="day-name">${formatDay(d.date)}</p>
+      <p class="day-temp">${Math.round(d.day.maxtemp_c)} °C</p>
+      <p class="day-cond">${d.day.condition.text}</p>
+      <div class="sun">
+        <div><span>Východ</span><b>${to24h(d.astro.sunrise)}</b></div>
+        <div><span>Západ</span><b>${to24h(d.astro.sunset)}</b></div>
+      </div>
+    </article>
+  `).join("");
+
+  resultEl.innerHTML = `
+    <p class="place">${location.name}<small>${location.region ? location.region + ", " : ""}${location.country}</small></p>
+
+    <h2>Kvalita ovzduší</h2>
+    <div class="aqi" style="--aqi:${level.color}">
+      <p class="aqi-label">${level.text}</p>
+      <div class="aqi-values">
+        <span>PM2.5 <b>${fmt(aq.pm2_5)}</b> µg/m³</span>
+        <span>PM10 <b>${fmt(aq.pm10)}</b> µg/m³</span>
+        <span>O₃ <b>${fmt(aq.o3)}</b> µg/m³</span>
+        <span>NO₂ <b>${fmt(aq.no2)}</b> µg/m³</span>
+      </div>
+    </div>
+
+    <h2>Předpověď na ${forecast.forecastday.length} dny</h2>
+    <div class="days">${daysHtml}</div>
+  `;
+  resultEl.hidden = false;
+}
+
+// "2026-10-20" → "úterý 20. 10."
+function formatDay(dateStr) {
+  const date = new Date(dateStr + "T12:00:00");
+  return date.toLocaleDateString("cs-CZ", { weekday: "long", day: "numeric", month: "numeric" });
+}
+
+// WeatherAPI vrací "07:12 AM" → převod na "7:12"
+function to24h(time12) {
+  const [hm, period] = time12.split(" ");
+  let [h, m] = hm.split(":").map(Number);
+  if (period === "PM" && h !== 12) h += 12;
+  if (period === "AM" && h === 12) h = 0;
+  return `${h}:${String(m).padStart(2, "0")}`;
+}
+
+function fmt(n) {
+  return n == null ? "–" : n.toFixed(1);
+}
+
+function setStatus(msg, isError = false) {
+  statusEl.textContent = msg;
+  statusEl.className = isError ? "status error" : "status";
+}
+</script>
+</body>
+</html>
